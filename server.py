@@ -77,6 +77,36 @@ def _matching(service: str | None = None, neighborhood: str | None = None, statu
     ]
 
 
+COLUMNS = {
+    "request_id": "The request's ID. Pass it to get_request.",
+    "opened": "When the request was opened, ISO 8601, San Francisco local time.",
+    "closed": "When it was closed, or null while it is still open.",
+    "status": "Open or Closed.",
+    "service": "What the request is about, such as Graffiti Public. Exact names are in dataset_info.",
+    "subtype": "A finer category within the service, such as encampment or garbage_and_debris.",
+    "agency": "The city team that owns the request.",
+    "neighborhood": "One of the city's 41 official analysis neighborhoods, or empty when unknown.",
+    "local_name": "The name people use for the area, such as Lower Nob Hill. One name can span several official neighborhoods.",
+    "address": "Where the problem is, cut to the block (900 block of HARRISON ST). Intersections are kept as they are.",
+    "source": "How it was filed: Mobile, Web, Phone, and others.",
+}
+
+
+@mcp.resource(
+    "sf311://columns",
+    name="columns",
+    description="What each field in a 311 request means. Read this before interpreting search_requests or get_request results.",
+    mime_type="application/json",
+)
+def columns() -> dict:
+    """The fields of a 311 request, as the tools return them, with their meaning."""
+    return {
+        "fields": COLUMNS,
+        "source": "DataSF 311 Cases (https://data.sf.gov/d/vw6y-z8j6), Open Data Commons PDDL.",
+        "terms": "The DataSF terms forbid using this data to identify or contact people.",
+    }
+
+
 @mcp.tool(annotations=READ_ONLY)
 def dataset_info() -> dict:
     """Describe the 311 dataset this server answers questions about.
@@ -92,6 +122,7 @@ def dataset_info() -> dict:
         "services": SERVICES,
         "neighborhoods": NEIGHBORHOODS,
         "local_neighborhood_names": len(LOCAL_NAMES),
+        "field_descriptions": "Read the sf311://columns resource for what each request field means.",
     }
 
 
