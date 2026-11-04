@@ -144,22 +144,53 @@ def median_close_hours(
 
 @mcp.tool(annotations=READ_ONLY)
 def search_requests(
+    ctx: Context,
     service: str | None = None,
     neighborhood: str | None = None,
     status: Literal["Open", "Closed"] | None = None,
     limit: int = 20,
-) -> list[dict]:
-    """List individual 311 requests, newest first, filtered by service, official neighborhood, and status.
+    boundary: str | None = None,
+) -> list[dict] | str:
+    """List individual 311 requests, newest first, filtered by service, neighborhood, and status.
 
     Returns up to `limit` requests (1 to 50) as dicts with request_id,
     opened, closed, status, service, subtype, agency, neighborhood,
-    local_name, address, and source. Use this to see examples. Do not use
-    it to count or rank: it is capped at 50 rows, so use count_requests
-    or median_close_hours instead. Use get_request for one known request_id.
+    local_name, address (to the block only), and source. `neighborhood`
+    takes an official name or a local name such as "Lower Nob Hill"; a local
+    name that overlaps several official neighborhoods asks the user which
+    part, unless `boundary` is given (one of those neighborhoods, or "all").
+    Use this to see examples. Do not use it to count or rank: it is capped
+    at 50 rows, so use count_requests or median_close_hours instead.
+    Use get_request for one known request_id.
     """
     if not 1 <= limit <= MAX_ROWS:
         raise ToolError(f"limit must be between 1 and {MAX_ROWS}. For totals, use count_requests.")
-    rows = sorted(_matching(service, neighborhood, status), key=lambda r: r.opened, reverse=True)
+
+    if neighborhood is None or neighborhood in NEIGHBORHOODS:
+        rows = _matching(service, neighborhood, status)
+    else:
+        area, parts = _local_area(neighborhood)
+        part = None
+        if len(parts) > 1:
+            if boundary is None:
+                answer = read_choice(ctx, "boundary")
+                if answer is None:
+                    return ask_choice(
+                        "boundary",
+                        f"{neighborhood} overlaps {len(parts)} official neighborhoods. Which part should I search?",
+                        parts + [f"All of {neighborhood}"],
+                    )
+                if not answer.accepted:
+                    return f"Nothing was searched: no part of {neighborhood} was chosen. Call again with boundary set to one of {parts} or 'all'."
+                boundary = answer.value
+            if boundary not in ("all", f"All of {neighborhood}"):
+                if boundary not in parts:
+                    raise ToolError(f"{boundary!r} is not part of {neighborhood}. Use one of {parts}, or 'all'.")
+                part = boundary
+        allowed = {id(r) for r in _matching(service, None, status)}
+        rows = [r for r in area if id(r) in allowed and (part is None or r.neighborhood == part)]
+
+    rows = sorted(rows, key=lambda r: r.opened, reverse=True)
     return [_public(r) for r in rows[:limit]]
 
 
