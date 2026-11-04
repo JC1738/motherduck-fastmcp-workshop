@@ -9,11 +9,11 @@ from collections import Counter, defaultdict
 from statistics import median
 from typing import Literal
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
-from sf311.kit import caller_email
+from sf311.kit import ask_choice, caller_email, read_choice
 
 mcp = FastMCP("sf-311")
 log = logging.getLogger("sf311.server")
@@ -196,6 +196,69 @@ def open_backlog(service: str | None = None, neighborhood: str | None = None) ->
         "total": len(rows),
         "share_open": round(len(still_open) / len(rows), 3) if rows else None,
         "oldest_open_hours": round((LAST_OPENED - oldest).total_seconds() / 3600, 1) if oldest else None,
+    }
+
+
+def _local_area(name: str) -> tuple[list[Request], list[str]]:
+    """Requests in a local area, and the official neighborhoods it overlaps (largest first)."""
+    if name not in LOCAL_NAMES:
+        suggestions = closest(name, NEIGHBORHOODS + LOCAL_NAMES)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise ToolError(f"Unknown neighborhood name {name!r}.{hint}")
+    rows = [r for r in REQUESTS if r.local_name == name]
+    counts = Counter(r.neighborhood for r in rows if r.neighborhood)
+    parts = [n for n, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+    return rows, parts
+
+
+@mcp.tool(annotations=READ_ONLY)
+def count_in_neighborhood(name: str, ctx: Context, boundary: str | None = None) -> int | str:
+    """Count requests in a neighborhood, by its official name or the local name people use.
+
+    Official names (see dataset_info) are counted directly. A local name such
+    as "Lower Nob Hill" can overlap several official neighborhoods; then the
+    user is asked which part to count. Pass `boundary` to skip the question:
+    one of the overlapped official neighborhoods, or "all". Returns a number,
+    or a short message if the user declined. For the split across every part
+    at once, use local_area_breakdown.
+    """
+    if name in NEIGHBORHOODS:
+        return sum(1 for r in REQUESTS if r.neighborhood == name)
+    rows, parts = _local_area(name)
+    if len(parts) <= 1:
+        return len(rows)
+
+    all_label = f"All of {name}"
+    if boundary is None:
+        answer = read_choice(ctx, "boundary")
+        if answer is None:
+            return ask_choice("boundary", f"{name} overlaps {len(parts)} official neighborhoods. Which part should I count?", parts + [all_label])
+        if not answer.accepted:
+            return f"Nothing was counted: no part of {name} was chosen. Call again with boundary set to one of {parts} or 'all'."
+        boundary = answer.value
+
+    if boundary in ("all", all_label):
+        return len(rows)
+    if boundary not in parts:
+        raise ToolError(f"{boundary!r} is not part of {name}. Use one of {parts}, or 'all'.")
+    return sum(1 for r in rows if r.neighborhood == boundary)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def local_area_breakdown(name: str) -> dict:
+    """Split a local neighborhood name across the official neighborhoods it overlaps.
+
+    Returns total and parts: each official neighborhood with its count and
+    share (0 to 1), largest first. Use this for "which part holds the most"
+    or "what share" questions about a local name; it asks nothing. Use
+    count_in_neighborhood for a single count.
+    """
+    rows, parts = _local_area(name)
+    counts = Counter(r.neighborhood for r in rows if r.neighborhood)
+    return {
+        "name": name,
+        "total": len(rows),
+        "parts": [{"neighborhood": n, "count": counts[n], "share": round(counts[n] / len(rows), 3)} for n in parts],
     }
 
 
