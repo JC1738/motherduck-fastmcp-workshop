@@ -3,6 +3,8 @@
 FastMCP Gateway runs this file. Its entrypoint setting is `server.py:mcp`.
 """
 
+import logging
+import re
 from collections import Counter, defaultdict
 from statistics import median
 from typing import Literal
@@ -11,8 +13,28 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
+from sf311.kit import caller_email
 
 mcp = FastMCP("sf-311")
+log = logging.getLogger("sf311.server")
+
+HOUSE_NUMBER = re.compile(r"^(\d+)\s+([^,]+)")
+LAST_OPENED = max(r.opened for r in REQUESTS)
+
+
+def mask_address(address: str) -> str:
+    """Cut a street address to its block: "994 HARRISON ST, ..." -> "900 block of HARRISON ST"."""
+    match = HOUSE_NUMBER.match(address)
+    if not match:
+        return address
+    block = int(match.group(1)) // 100 * 100
+    return f"{block} block of {match.group(2).strip()}"
+
+
+def _public(request: Request) -> dict:
+    row = request.as_dict()
+    row["address"] = mask_address(request.address)
+    return row
 
 MAX_ROWS = 50
 MIN_CLOSED_FOR_MEDIAN = 10
@@ -131,7 +153,7 @@ def search_requests(
     if not 1 <= limit <= MAX_ROWS:
         raise ToolError(f"limit must be between 1 and {MAX_ROWS}. For totals, use count_requests.")
     rows = sorted(_matching(service, neighborhood, status), key=lambda r: r.opened, reverse=True)
-    return [r.as_dict() for r in rows[:limit]]
+    return [_public(r) for r in rows[:limit]]
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -141,9 +163,33 @@ def get_request(request_id: str) -> dict:
     Use this after search_requests to look at a single request in detail.
     """
     request = BY_ID.get(request_id.strip())
+    log.info("get_request request_id=%s caller=%s", request_id, caller_email() or "local")
     if request is None:
         raise ToolError(f"No request with id {request_id!r}. Use search_requests to find real request_ids.")
-    return request.as_dict()
+    return _public(request)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def open_backlog(service: str | None = None, neighborhood: str | None = None) -> dict:
+    """How many requests opened this week are still open, optionally for one service and official neighborhood.
+
+    Returns open, closed, total, share_open (0 to 1), and
+    oldest_open_hours: how long the oldest still-open request has waited,
+    measured to the last request in the snapshot. Use this for "still open",
+    "backlog", or "unresolved" questions in one call. Use count_requests
+    with group_by="status" to compare backlogs across many groups, and
+    median_close_hours for how fast requests close.
+    """
+    rows = _matching(service, neighborhood)
+    still_open = [r for r in rows if r.status == "Open"]
+    oldest = min((r.opened for r in still_open), default=None)
+    return {
+        "open": len(still_open),
+        "closed": len(rows) - len(still_open),
+        "total": len(rows),
+        "share_open": round(len(still_open) / len(rows), 3) if rows else None,
+        "oldest_open_hours": round((LAST_OPENED - oldest).total_seconds() / 3600, 1) if oldest else None,
+    }
 
 
 if __name__ == "__main__":
