@@ -17,6 +17,13 @@ from sf311.kit import caller_email
 
 mcp = FastMCP("sf-311")
 log = logging.getLogger("sf311.server")
+# Nothing configures the root logger on FastMCP Gateway, so INFO lines would be dropped.
+# Give this logger its own handler; it still propagates, so pytest's caplog sees it too.
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_handler)
+log.setLevel(logging.INFO)
 
 HOUSE_NUMBER = re.compile(r"^(\d+)\s+([^,]+)")
 LAST_OPENED = max(r.opened for r in REQUESTS)
